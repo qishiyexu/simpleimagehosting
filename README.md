@@ -2,6 +2,8 @@
 
 无依赖的图片/文件托管服务。上传需要 API key，上传后返回可访问 URL。
 
+代码兼容 VPS 上常见的老系统 Python 3。
+
 ## 运行
 
 ```powershell

@@ -15,6 +15,21 @@ class ServerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "X-Filename"):
             server.parse_upload({"Content-Type": "application/octet-stream"}, b"abc")
 
+    def test_multipart_upload_finds_file_part(self):
+        boundary = "----test"
+        body = (
+            b"------test\r\n"
+            b'Content-Disposition: form-data; name="file"; filename="a b.txt"\r\n'
+            b"Content-Type: text/plain\r\n\r\n"
+            b"hello\r\n"
+            b"------test--\r\n"
+        )
+        filename, content = server.parse_upload(
+            {"Content-Type": "multipart/form-data; boundary=----test"}, body
+        )
+        self.assertEqual(filename, "a-b.txt")
+        self.assertEqual(content, b"hello")
+
     def test_save_upload_writes_unique_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             old_dir = server.UPLOAD_DIR

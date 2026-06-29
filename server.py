@@ -1,11 +1,11 @@
-from email import policy
 from email.parser import BytesParser
 import json
 import mimetypes
 import os
 from pathlib import Path
 import re
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import socketserver
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import unquote
 from uuid import uuid4
 
@@ -26,7 +26,7 @@ def clean_filename(name):
 def has_api_key(headers):
     bearer = headers.get("Authorization", "")
     if bearer.startswith("Bearer "):
-        return bearer.removeprefix("Bearer ") == API_KEY
+        return bearer[len("Bearer "):] == API_KEY
     return headers.get("X-API-Key") == API_KEY
 
 
@@ -34,11 +34,13 @@ def parse_upload(headers, body):
     content_type = headers.get("Content-Type", "")
     if content_type.startswith("multipart/form-data"):
         raw = (
-            f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n".encode()
+            "Content-Type: {}\r\nMIME-Version: 1.0\r\n\r\n".format(content_type).encode()
             + body
         )
-        message = BytesParser(policy=policy.default).parsebytes(raw)
-        for part in message.iter_parts():
+        message = BytesParser().parsebytes(raw)
+        for part in message.walk():
+            if part.is_multipart():
+                continue
             filename = part.get_filename()
             if filename:
                 return clean_filename(filename), part.get_payload(decode=True) or b""
@@ -54,7 +56,7 @@ def save_upload(filename, content):
     if not content:
         raise ValueError("empty upload")
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    stored = f"{uuid4().hex}-{filename}"
+    stored = "{}-{}".format(uuid4().hex, filename)
     path = UPLOAD_DIR / stored
     path.write_bytes(content)
     return stored, path
@@ -65,7 +67,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/health":
             return self.send_json(200, {"ok": True})
         if self.path.startswith("/files/"):
-            return self.send_file(self.path.removeprefix("/files/"))
+            return self.send_file(self.path[len("/files/"):])
         self.send_error(404)
 
     def do_POST(self):
@@ -88,7 +90,7 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError as exc:
             return self.send_json(400, {"error": str(exc)})
 
-        url = f"{BASE_URL}/files/{stored}"
+        url = "{}/files/{}".format(BASE_URL, stored)
         self.send_json(201, {"url": url, "filename": stored, "size": path.stat().st_size})
 
     def send_file(self, name):
@@ -103,8 +105,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(path.stat().st_size))
         self.end_headers()
         with path.open("rb") as file:
-            while chunk := file.read(1024 * 1024):
+            chunk = file.read(1024 * 1024)
+            while chunk:
                 self.wfile.write(chunk)
+                chunk = file.read(1024 * 1024)
 
     def send_json(self, status, payload):
         data = json.dumps(payload, ensure_ascii=False).encode()
@@ -115,7 +119,11 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
 
+class ThreadingHTTPServer(socketserver.ThreadingMixIn, HTTPServer):
+    daemon_threads = True
+
+
 if __name__ == "__main__":
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    print(f"listening on 0.0.0.0:{PORT}, files in {UPLOAD_DIR}")
+    print("listening on 0.0.0.0:{}, files in {}".format(PORT, UPLOAD_DIR))
     ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
