@@ -32,6 +32,12 @@ curl -H "X-API-Key: change-me" -F "file=@cat.png" http://127.0.0.1:8000/upload
 curl -H "X-API-Key: change-me" -H "X-Filename: cat.png" --data-binary @cat.png http://127.0.0.1:8000/upload
 ```
 
+用测试脚本上传：
+
+```bash
+python test_upload.py --url http://127.0.0.1:8000/upload --api-key change-me cat.png
+```
+
 也支持：
 
 ```bash
@@ -145,4 +151,86 @@ sudo certbot --nginx -d img.example.com
 
 ```bash
 sudo systemctl restart simpleimagehosting
+```
+
+### 413 Request Entity Too Large
+
+这个错误是 Nginx 拦截了上传，通常是 `client_max_body_size` 没生效。
+
+先确认配置真的被 Nginx 加载：
+
+```bash
+sudo nginx -T | grep -n "client_max_body_size\|server_name"
+```
+
+如果没看到你的域名和 `client_max_body_size 50m;`，检查站点是否启用：
+
+```bash
+ls -l /etc/nginx/sites-enabled/
+sudo ln -s /etc/nginx/sites-available/simpleimagehosting /etc/nginx/sites-enabled/simpleimagehosting
+```
+
+也可以直接把大小限制放到 `/etc/nginx/nginx.conf` 的 `http { ... }` 里面，全站生效：
+
+```nginx
+http {
+    client_max_body_size 50m;
+}
+```
+
+改完检查并重载：
+
+```bash
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+如果还有 413，说明请求进了另一个 Nginx server 块；用 `sudo nginx -T` 找到匹配当前域名的 `server_name`，把 `client_max_body_size 50m;` 加到那个 `server { ... }` 里。
+
+### 404 Not Found
+
+如果返回页脚是 `nginx/版本号`，说明 404 来自 Nginx，不是 Python 服务。
+
+先确认上传地址带 `/upload`：
+
+```bash
+python3 test_upload.py --url https://img.example.com/upload --api-key change-me cat.png
+```
+
+再在 VPS 上检查 Python 服务：
+
+```bash
+curl http://127.0.0.1:8000/health
+```
+
+应该返回：
+
+```json
+{"ok": true}
+```
+
+然后检查公网域名有没有进反代：
+
+```bash
+curl -i https://img.example.com/health
+sudo nginx -T | grep -n "server_name\|proxy_pass"
+```
+
+如果公网 `/health` 还是 Nginx 404，把下面这个 `location /` 加到当前域名实际匹配的 `server { ... }` 里：
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8000;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
+改完：
+
+```bash
+sudo nginx -t
+sudo systemctl reload nginx
 ```
